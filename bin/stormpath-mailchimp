@@ -135,8 +135,11 @@ function getDirectory(callback) {
     }, function(err) {
       if (err) {
         callback(new Error("Failed to retrieve list of directories from Stormpath."));
+      } else if (!directory) {
+        callback(new Error('Failed to retrieve Stormpath Directory: ' + program.directory));
+      } else {
+        callback(null, directory);
       }
-      return callback(null, directory);
     });
   });
 
