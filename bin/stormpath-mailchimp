@@ -1,0 +1,281 @@
+#!/usr/bin/env node
+
+
+var fs = require('fs');
+var path = require('path');
+var readline = require('readline');
+
+var async = require('async');
+var mailchimp = require('mailchimp');
+var mkdirp = require('mkdirp');
+var program = require('commander');
+var stormpath = require('stormpath');
+
+
+// Globals
+var MAILCHIMP_CLIENT;
+var STORMPATH_CLIENT;
+var VERSION = '0.0.1';
+
+var HOME = process.env[(process.platform == 'win32') ? 'USERPROFILE': 'HOME'];
+var CONFIG_DIR = HOME + '/.stormpath/mailchimp';
+var CONFIG_FILE = CONFIG_DIR + '/config.json';
+
+
+// Initialize command line.
+program
+  .version(VERSION)
+  .option('-c, --configure', 'Configure stormpath-mailchimp.', 'configure')
+  .option('-d, --directory <dir>', 'Stormpath Directory name to use for user data.', 'directory')
+  .option('-l, --list <list>', 'Mailchimp list name to populate.', 'list')
+  .parse(process.argv);
+
+
+/**
+ * Merge all Stormpath users in the given Directory into the given Mailchimp
+ * List.
+ *
+ * @param {Object} directory - The Stormpath Directory object.
+ * @param {Object} list - The Mailchimp List object.
+ * @param {Function} callback The callback function to run after this merge
+ *  operation has been processed.  The signature of the callback function is
+ *  (err), which will be null if everything worked.
+ **/
+function merge(directory, list, callback) {
+
+  directory.getAccounts(function(err, accounts) {
+    if (err) {
+      console.log('Failed to retrieve Stormpath Accounts.');
+      return callback(err);
+    }
+
+    accounts.each(function(account, cb) {
+      MAILCHIMP_CLIENT.call('lists', 'subscribe', {
+        id: list.id,
+        email: {
+          email: account.email
+        },
+        merge_vars: {
+          FNAME: account.givenName,
+          LNAME: account.surname
+        },
+        update_existing: true
+      }, function(err, resp) {
+        if (err) {
+          console.log(err);
+          console.log('Failed to merge Account: ' + account.email);
+          return cb(err);
+        }
+
+        // DEBUG
+        console.log('Finished merging Account: ' + account.email);
+        cb();
+      });
+    }, function(err) {
+      if (err) {
+        return callback(err);
+      }
+      callback();
+    });
+  });
+
+}
+
+
+/**
+ * Find the specified Mailchimp list, then return it.
+ *
+ * @param {Object} directory - The Stormpath Directory object.
+ * @param {Function} callback The callback function to run after the list has
+ *  been retrieved.  The signature of the callback function is (err, directory,
+ *  list) where directory is a Directory object and list is a Mailchimp List
+ *  object.
+ **/
+function getList(directory, callback) {
+
+  MAILCHIMP_CLIENT.call('lists', 'list', { list_name: program.list }, function(err, resp) {
+    if (err) {
+      console.log('Failed to retrieve Mailchimp lists.');
+      return callback(err);
+    }
+
+    for (var i = 0; i < resp.data.length; i++) {
+      if (resp.data[i].name.toLowerCase() === program.list.toLowerCase()) {
+        return callback(null, directory, resp.data[i]);
+      }
+    }
+
+    return callback(new Error('No Mailchimp List named ' + program.list + ' could be found.'));
+  });
+
+}
+
+
+/**
+ * Find the specified Stormpath directory, then return it.
+ *
+ * @param {Function} callback The callback function to run after the directory
+ *  has been retrieved.  The signature of the callback function is (err,
+ *  directory) where directory is a Directory object.
+ **/
+function getDirectory(callback) {
+
+  STORMPATH_CLIENT.getDirectories({ name: program.directory }, function(err, directories) {
+    if (err) {
+      console.log('Failed to retrieve Directory list.');
+      return callback(err);
+    }
+
+    var directory;
+    directories.each(function(dir, cb) {
+      if (dir.name.toLowerCase() === program.directory.toLowerCase()) {
+        directory = dir;
+      }
+      cb();
+    }, function(err) {
+      if (err) {
+        callback(new Error("Failed to retrieve list of directories from Stormpath."));
+      }
+      return callback(null, directory);
+    });
+  });
+
+}
+
+
+/**
+ * Initialize all global API clients, given configuration data.
+ *
+ * @param {Json} config Configuration data.
+ * @param {Function} callback Callback to run once this function is done
+ *   executing.  This callback has the signature (err), where err is an error.
+ *   If err is null, everything succeeded.
+ **/
+function initializeClients(config, callback) {
+
+  var apiKey = new stormpath.ApiKey(
+    config.stormpath_api_key_id,
+    config.stormpath_api_key_secret
+  );
+
+  STORMPATH_CLIENT = new stormpath.Client({ apiKey: apiKey });
+  MAILCHIMP_CLIENT = new mailchimp.MailChimpAPI(config.mailchimp_api_key, { version: '2.0' });
+
+  callback();
+
+}
+
+
+/**
+ * Load configuration information from the config file.  If no configuration
+ * information can be found, the callback will be called with an error argument.
+ *
+ * @param {Function} callback The callback function to run after configuration
+ *   information has been loaded.  The signature of the callback function is
+ *   (err, config), where err is an error, and config is JSON configuration
+ *   data.
+ */
+function load(callback) {
+
+  var config;
+
+  fs.readFile(CONFIG_FILE, 'utf8', function(err, data) {
+    if (err) {
+      callback(new Error("ERROR: Couldn't open the configuration file. You need to configure stormpath-mailchimp to continue!"));
+    }
+
+    try {
+      config = JSON.parse(data);
+    } catch (e) {
+      callback(new Error("ERROR: Couldn't parse the configuration data. You need to configure stormpath-mailchimp to continue!"));
+    }
+
+    callback(null, config);
+  });
+
+}
+
+
+/**
+ * Configure enrich by asking for / utilizing a user's Stormpath and FullContact
+ * credentials.
+ *
+ * This will store all configuration information in a JSON file inside
+ * ~/.stormpath/enrich/config.json
+ */
+function configure() {
+
+  var rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  // Grab the user's API keys for Stormpath and FullContact, then store them in
+  // the configuration file.
+  async.waterfall([
+    function(cb) {
+      mkdirp(CONFIG_DIR, function(err, made) {
+        if (err) {
+          cb(new Error("ERROR: Can't create configuration directory:", CONFIG_DIR));
+        }
+        cb();
+      });
+    },
+    function(cb) {
+      rl.question("Enter your Stormpath API Key ID: ", function(id) {
+        cb(null, id.trim());
+      });
+    },
+    function(id, cb) {
+      rl.question("Enter your Stormpath API Key Secret: ", function(secret) {
+        cb(null, id, secret.trim());
+      });
+    },
+    function(id, secret, cb) {
+      rl.question("Enter your Mailchimp API Key: ", function(key) {
+        cb(null, id, secret, key.trim());
+      });
+    },
+    function(id, secret, key, cb) {
+      fs.writeFile(CONFIG_FILE, JSON.stringify({
+          stormpath_api_key_id: id,
+          stormpath_api_key_secret: secret,
+          mailchimp_api_key: key,
+      }, null, 2), function(err) {
+        if (err) {
+          console.log("ERROR: Can't write configuration file:", CONFIG_FILE);
+          cb(err);
+        }
+        cb();
+      });
+    },
+  ], function(err) {
+    rl.close();
+  });
+
+}
+
+
+/**
+ * Program starts here!
+ */
+function main() {
+  if (program.configure) {
+    configure();
+  } else {
+    if (!program.directory || !program.list) {
+      console.log('ERROR: Stormpath Directory name and Mailchimp list name are required.');
+      program.help();
+    }
+
+    async.waterfall([load, initializeClients, getDirectory, getList, merge], function(err) {
+      if (err) {
+        console.log(err);
+        process.exit(1);
+      }
+    });
+  }
+}
+
+
+main();
