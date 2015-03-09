@@ -13,7 +13,7 @@ If you use [Stormpath][] to store and manage your user accounts,
 lists magically.
 
 Currently, `stormpath-mailchimp` will go through your chosen Stormpath, and
-subscribe all new users to your [Mailchinmp][] mailing list of choice.  We'll
+subscribe all new users to your [Mailchimp][] mailing list of choice.  We'll
 automatically handle adding your user's:
 
 - Email
