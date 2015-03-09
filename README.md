@@ -88,7 +88,7 @@ directory of users!
 
   [Monkey Sketch]: https://github.com/rdegges/stormpath-mailchimp/raw/master/assets/monkey-sketch.jpg "Monkey Sketch"
   [Stormpath]: https://stormpath.com/ "Stormpath"
-  [Mailchimp]: http://mailchimp.com/ "Mailchimp"
+  [Mailchimp]: http://eepurl.com/bgsmgr "Mailchimp"
   [here]: https://api.stormpath.com/register "Create a Stormpath Account"
   [over here]: http://eepurl.com/bgsmgr "Create a Mailchimp Account"
   [npm]: https://www.npmjs.org/ "npm"
